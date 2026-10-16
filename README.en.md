@@ -26,6 +26,8 @@ When an update is available, rfm asks for your consent. **It does not download o
 
 The helper does not request administrator elevation, install a service or scheduled task, run PowerShell/BAT update scripts, or terminate other users' processes. For safety, installation is refused when running elevated or when the executable's folder is shared-writable, owned by another user, or protected. Run normally from a dedicated folder as described above. Another process locking the executable can also prevent replacement. A failed replacement or restart attempts to restore the previous executable and reports the error; if Windows prevents restoration too, follow the recovery information shown rather than deleting backup files.
 
+Backup and temporary-file cleanup is limited to files created by the update. Temporary executables may remain if Windows defers or refuses deletion.
+
 The release provides `rfm-windows-x86_64.exe` and `rfm-windows-x86_64.exe.sha256`. The updater verifies the download size and SHA-256 before replacement. **SHA-256 detects transfer corruption; it is not a digital signature or independent proof of publisher identity.** Trust comes from HTTPS and the official GitHub repository/release, not Authenticode signing. You can also download the checksum and compare it manually:
 
 ```powershell
