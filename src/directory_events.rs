@@ -330,7 +330,7 @@ pub fn search(
         };
         check_cancel(cancel)?;
         let child = if is_dir
-            && !attributes.is_some_and(|attributes| attributes & FILE_ATTRIBUTE_REPARSE_POINT != 0)
+            && attributes.is_none_or(|attributes| attributes & FILE_ATTRIBUTE_REPARSE_POINT == 0)
         {
             match Frame::open(&path, show_hidden, &mut visited) {
                 Ok(frame) => frame,
