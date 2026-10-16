@@ -19,7 +19,13 @@ mod settings;
 mod shell;
 mod terminal;
 mod ui;
+mod update_install;
+mod update_net;
+mod update_ui;
 
 fn main() {
+    if let Some(code) = update_install::run_helper_if_requested() {
+        std::process::exit(code);
+    }
     ui::run();
 }

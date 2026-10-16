@@ -1,180 +1,211 @@
 # rfm
 
-[日本語](README.ja.md) · English
+日本語 · [English](README.en.md)
 
-A lightweight, tabbed file manager for **Windows 10 and 11**, written in Rust. rfm uses native Windows controls and a virtual file list, without Electron, a WebView, or a separate GUI runtime.
+Rust製の軽量な**Windows 10 / 11（x64）向け**タブ対応ファイラーです。Windows標準コントロールと仮想リストビューを使い、Electron、WebView、外部GUIランタイムは不要です。
 
-rfm is for everyday work with filesystem folders. It is not a replacement for the Windows desktop or taskbar, and does not aim to reproduce every File Explorer feature.
+通常のファイルシステム上のフォルダー管理を目的としています。Windowsのデスクトップやタスクバーの置き換えではなく、Explorerの全機能・全画面との完全互換を目指すものでもありません。
 
-## Build and run
+## ダウンロードと起動
 
-Distribution is currently **source-build only**. Build on Windows with Rust **1.88 or newer** using the MSVC toolchain, Visual Studio Build Tools with **Desktop development with C++**, and the Windows SDK.
+**[Windows x64版をダウンロード](https://github.com/dikmri/rfm/releases/latest/download/rfm-windows-x86_64.exe)** — ビルドやインストーラーは不要です。
+
+1. 公式の[最新リリース](https://github.com/dikmri/rfm/releases/latest)から`rfm-windows-x86_64.exe`をダウンロードします。
+2. 自分が所有し、他のユーザーが書き換えられない専用フォルダー（例：`%LOCALAPPDATA%\Programs\rfm`）へ置き、ダブルクリックして起動します。管理者権限は不要です。
+3. タスクバーへピン留めする場合は、exeの置き場所を決めてから、起動中のアイコンをピン留めしてください。
+
+exeは**Authenticode未署名**です。Windows SmartScreenや組織のセキュリティポリシーにより、未認識のアプリとして警告・ブロックされる場合があります。ダウンロード元が`github.com/dikmri/rfm`であることとリリース内容を確認し、実行するか判断してください。SmartScreen、ウイルス対策などのセキュリティ設定は無効化しないでください。管理されたPCでは管理者のポリシーに従ってください。
+
+### 更新
+
+起動時に公式GitHubリポジトリの新しい安定版をバックグラウンドで確認します。通信失敗、GitHub APIの利用不可、リリース未公開でも起動や通常のファイル閲覧を妨げません。ドラフト・プレリリースは更新対象にしません。
+
+**「ファイル → 更新を確認…」**から手動でも確認できます。更新機能のない旧版を使用している場合は、今回のexeで一度手動更新してください。以後のリリースはアプリ内から更新できます。
+
+更新がある場合は同意を求めます。**同意なしにダウンロード・適用しません。** 同意すると直ちにダウンロードを開始し、キャンセル可能なWindows標準の進捗ダイアログを表示します。検証後、ネイティブのヘルパーがこのrfmの正常終了を待ち、exeを置換して開いていたフォルダーとアクティブタブを引き継いで再起動します。辞退や適用前のキャンセルでは現在の版を維持します。
+
+ヘルパーは管理者昇格、サービス・タスクの登録、PowerShell/BAT更新スクリプト、他ユーザーのプロセスの強制終了を行いません。管理者として起動した場合や、共有書き込み可能・他ユーザー所有・書き込み保護されたフォルダーでは、安全のため更新を適用しません。通常権限で起動し、上記の専用フォルダーを使用してください。他のプロセスによるexeのロックでも更新できません。置換・再起動に失敗した場合は旧exeの復元を試み、エラーを表示します。Windowsにより復元も阻止された場合は、バックアップを削除せず、表示された復旧情報に従ってください。
+
+リリースには`rfm-windows-x86_64.exe`と`rfm-windows-x86_64.exe.sha256`を添付します。更新時はサイズとSHA-256を検証してから置換します。**SHA-256は転送破損の検出用であり、電子署名や配布者の真正性の独立した証明ではありません。** 信頼の根拠はHTTPSと公式GitHubリポジトリ・リリースであり、Authenticode署名ではありません。手動でもチェックサムをダウンロードして比較できます。
+
+```powershell
+Get-FileHash .\rfm-windows-x86_64.exe -Algorithm SHA256
+Get-Content .\rfm-windows-x86_64.exe.sha256
+```
+
+チェックサムファイルは、小文字64桁のハッシュ、半角スペース2個、`rfm-windows-x86_64.exe`、改行の形式です。ハッシュ値は大文字・小文字を区別せず比較します。手動で更新する場合はrfmを終了してから、検証済みのダウンロードでexeを置き換えてください。
+
+複数のフォルダーを引数に指定すると別タブで開きます。
+
+```powershell
+.\rfm-windows-x86_64.exe "C:\Users" "C:\Windows"
+```
+
+引数のフォルダーは設定した起動先より優先します。Explorerの既定ファイラー登録やWindowsのファイル関連付けは変更しません。
+
+## 主な機能
+
+- タブごとに場所、履歴、選択、スクロール、絞り込み、並べ替え、表示モードを保持。子フォルダーから戻った際は、親フォルダーの元の位置を復元してその子フォルダーを選択します。
+- 詳細 / 一覧 / 小アイコン / 中アイコン表示。名前はWindowsの自然順で比較し、フォルダーを先に表示。拡張子、隠しファイル、項目チェックボックスを切り替えられます。
+- コンパクトな標準メニューバー、クリック可能なパンくず、フルパス編集、戻る・進むの履歴、幅を変更できる左ペイン。「表示」メニューからコンパクトな操作バーも表示できます。
+- Windows標準のファイルアイコン、種別名、UIフォントと、高DPIに応じた配置。サイズは切り上げKB表示です。
+- Explorer互換のコピー・切り取り・貼り付け、新規フォルダー、一覧内の名前変更、ごみ箱への移動、確認付きの完全削除。
+- コピー・移動は`IFileOperation`を使用。同名競合、置換、スキップ、進捗、キャンセルはWindows標準処理に委ね、独自に無条件上書きしません。
+- 標準右クリックメニュー（`IContextMenu2/3`）、既定アプリで開く、プロパティ、パスのコピー。「送る」「プログラムから開く」「7-Zip」等はWindows側の登録に従います。
+- Windowsのデータオブジェクトでファイルのドラッグを開始。外部からのドロップは確認後に現在のフォルダーへコピーします。
+- 通常のフォルダー表示はシェル変更通知で更新。ディレクトリ読み込みやファイル操作はワーカーで処理し、古い結果は採用しません。
+
+メニューはExplorerのリボンそのものではなく、rfmのコンパクトな画面です。「共有」は選択項目に応じたWindows標準シェルメニューを直接表示します。シェル拡張は起動時に全列挙せず、右クリック時に必要なメニューを取得します。第三者の拡張による遅延や独自UIは、その拡張にも依存します。
+
+## 設定と言語
+
+**「ファイル → 設定…」**から変更します。保存先は`%LOCALAPPDATA%\rfm\settings.ini`です。追加の常駐サービスは使用しません。
+
+### 言語
+
+**「外観 → 言語」**で**「自動（Windows の表示言語）」「日本語」「English」**を選択できます。言語の変更は**次回起動時**に反映し、保存しても現在の画面の言語は変わりません。
+
+自動ではWindowsのユーザーUI言語が日本語なら日本語、それ以外なら英語を使用します。アプリが所有するメニュー、ダイアログ、ヘルプ、メッセージは日英に対応します。**Windows標準シェルメニュー、シェル拡張、OS由来のフォルダー表示名・種別名・エラー文はOSの言語のまま**です。ファイル名とパスは翻訳しません。
+
+### 起動先とウィンドウ位置
+
+ホームフォルダー（既定）、前回終了時のアクティブなタブのフォルダー、指定した絶対パスのフォルダーから選べます。**すべてのタブを復元する設定ではありません。** 起動先の変更も次回起動時に適用します。
+
+位置・サイズと最大化状態は通常の終了時に保存します。最小化したまま終了した場合は、次回は最小化前の状態で開きます。モニターの取り外しなどで保存位置が画面外になった場合は、Windows標準の配置処理で表示可能な位置へ調整します。
+
+### アイコン
+
+「外観」で**Windows標準（既定） / Lucide / Tabler**を選べます。言語とは異なり、保存すると現在の画面に適用し、次回起動時も維持します。
+
+Windows標準では公開テーマAPI、実際の既知フォルダーのアイコン、必要に応じてWindowsの記号フォントを使用します。Explorerの非公開画像をDLLから抽出する方式ではありません。LucideとTablerはナビゲーション・検索・操作バー、タブとパンくずのフォルダー、左ペインの6種類の既知フォルダーのアイコンを切り替えます。一覧内のファイル種別、ドライブ、独自アイコンを持つクイックアクセス項目はWindowsのシステムアイコンを維持します。
+
+アプリアイコンと選択式アイコンは複数解像度でexeに埋め込まれます。隣接する`.ico`、外部アイコンフォルダー、実行時のSVG描画環境は不要です。第三者アイコンのライセンスは[末尾](#ライセンス)を参照してください。
+
+### タスクバーへのピン留め
+
+exeは使用する場所に置いてからピン留めし、その後は移動・削除しないでください。旧版のピン留めでアイコンが正しく表示されない場合は、ピン留めを外し、旧版を終了して更新済みexeを起動し、起動中のアイコンから再度ピン留めします。rfmはユーザーのピン留めやWindows全体のアイコンキャッシュを削除しません。
+
+## クイックアクセス
+
+**Windows本来のクイックアクセスを共有**します。rfm専用のお気に入りファイルを別途作る方式ではなく、ピン留めの変更はWindowsの共有リストにも反映されます。
+
+- 「ファイル → クイックアクセスに追加」で選択したフォルダーを追加。フォルダー選択がなければ現在のフォルダーを追加します。
+- 「ファイル → 追加するフォルダーを選択…」でWindows標準の複数フォルダーピッカーを開きます。
+- 左ペインの右クリックから、開く・別タブで開く・追加・ピン留め解除。「ファイル」メニューから現在のフォルダーのピン留めも解除できます。
+- 追加は既存ピンを解除するトグルではありません。解除しても実フォルダーは削除しません。
+- ピン留めと「よく使うフォルダー」はWindows標準の並び順です。取得失敗はステータスに表示します。
+- Windows側の反映待ちがあるため、操作直後と遅延後に再取得します。他アプリで変更した場合は`F5`で更新できます。
+
+名前とパスを先に表示し、遅いシェルアイコンは後から反映します。再取得中も既存の一覧・取得済みアイコンを維持し、選択と先頭表示位置をパスと所属セクションで復元します。列挙とアイコン取得は各1ワーカーに制限し、古い結果で新しい一覧を上書きしません。Windows側の中断不能なアイコン取得に時間がかかる場合もありますが、すべてのアイコンを待ってから一覧を出す方式ではありません。
+
+## ターミナルで開く
+
+「ファイル → ターミナルで開く」、またはフォルダーや一覧背景の右クリックの「設定したターミナルで開く」を使用します。左ペインのフォルダーからも実行できます。
+
+フォルダーを1つ選択していればそのフォルダー、ファイルを1つ選択していればその親フォルダー、未選択なら現在のフォルダーを使用します。「ファイル」メニューから使う場合、複数選択は先に解除してください。
+
+既定は**Alacritty**で、別途インストールが必要です。「ファイル → 設定… → ターミナル」で変更できます。
+
+- **実行ファイル**：既定は`alacritty.exe`。`PATH`に見つからなければ「参照」でインストール先のexeを選択します。引数や外側の引用符は含めません。
+- **起動引数**：既定は`--working-directory "{folder}"`。`{folder}`を対象パスに置換します。他のターミナルではそのアプリの作業ディレクトリ指定に合わせて変更してください。空の引数も保存できます。
+
+保存後、次のターミナル起動から適用し、rfmの再起動は不要です。子プロセス自体の作業ディレクトリも対象フォルダーに設定しますが、ターミナルが上書きする場合はそのアプリに適した引数を指定してください。
+
+実行ファイルは直接起動し、`cmd /C`等のシェルを暗黙には介しません。Windows形式で引数を分割してから各引数内でパスを置換するため、空白や`&`を含むパスが別の引数に分かれません。実行ファイル欄に`.bat`・`.cmd`・`.lnk`は使用できません。自動インストールや別ターミナルへの無断フォールバック、Windows既定のターミナルや既存シェル拡張の設定変更は行いません。
+
+## 検索とプレビュー
+
+- 検索欄への入力は現在のフォルダー内の名前を即時絞り込み。検索欄で`Enter`を押すと、サブフォルダーを含む大文字・小文字を区別しないファイル名の部分一致検索を開始します。
+- 一覧で`Escape`を押すと通常表示に戻ります。検索語・場所の変更やタブの終了でも古い検索をキャンセルします。
+- 再帰検索はジャンクション等の再解析ポイントの配下を追跡しません。隠しフォルダーの走査は隠しファイル設定に従い、アクセスできない場所は件数を表示します。
+- `Alt+P`または「表示」メニューでプレビューを切り替えます。テキストは先頭**256 KiB**を読み、UTF-8 / BOM付きUTF-16 / Windowsの既定コードページとLF・CRLF改行に対応します。
+- 画像等はWindowsのサムネイルプロバイダーを使い、表示できない形式は理由を表示します。任意のプレビュー拡張を常時ホストする方式ではありません。
+- プレビューは表示時のみ作成し、選択変更を単一ワーカーでまとめて処理します。古い結果は表示しません。
+
+## キー操作
+
+| キー | 操作 |
+| --- | --- |
+| `Ctrl+T` / `Ctrl+W` | タブを追加 / 閉じる。最後のタブで終了 |
+| `Ctrl+N` | 現在のフォルダーを新しいウィンドウで開く |
+| `Ctrl+Tab` / `Ctrl+Shift+Tab` | 次 / 前のタブ |
+| `Ctrl+1`～`Ctrl+8` / `Ctrl+9` | 指定位置 / 最後のタブ |
+| `Ctrl+L` / `Alt+D` | アドレスのフルパス編集 |
+| `Ctrl+F` | 検索欄へ。入力で絞り込み、`Enter`で再帰検索 |
+| `Alt+←` / `Alt+→` | 戻る / 進む |
+| `Alt+↑` / `Backspace` | 親フォルダー。Backspaceは一覧にフォーカスがある場合 |
+| `Enter` / ダブルクリック | 選択項目を開く |
+| `Ctrl+Enter` | 選択フォルダーを別タブで開く |
+| `Ctrl+C` / `Ctrl+X` / `Ctrl+V` | コピー / 切り取り / 貼り付け |
+| `Ctrl+Shift+C` | 選択項目のパスをコピー。選択なしなら現在のフォルダー |
+| `Ctrl+A` | すべて選択 |
+| `Space` | チェックボックス表示中、フォーカス項目の選択を切り替え |
+| `Ctrl+Shift+N` | 新しいフォルダー |
+| `F2` | 一覧内で名前変更。`Enter`で確定、`Escape`で取消 |
+| `Delete` | ごみ箱に移動 |
+| `Shift+Delete` | 完全削除。確認の初期選択は「いいえ」 |
+| `Alt+Enter` | 選択項目、または現在のフォルダーのプロパティ |
+| `Alt+P` | プレビューの表示切り替え |
+| `Ctrl+H` | 隠しファイルの表示切り替え |
+| `F5` | 一覧、クイックアクセス、プレビューを更新 |
+| `Escape` | 名前変更・アドレス入力の取消 / 検索の終了 |
+| `F1` | 操作方法 |
+
+名前変更・アドレス・検索の編集中は、コピー・切り取り・貼り付け・全選択・Backspaceは通常のテキスト編集として動作します。名前変更中は監視による更新を待機し、入力を破棄しません。拡張子表示時は名前部分を初期選択し、非表示時は元の拡張子を保持します。
+
+タブの`＋`で追加、`×`または中クリックで閉じられます。多数のタブは矢印・ホイールでスクロールできます。
+
+## データ保護と制約
+
+- 複数項目のコピー・移動・削除は**トランザクションではありません**。キャンセル・エラー時に一部だけ完了する場合があるため、両側のフォルダーを確認してください。
+- 名前変更・新規フォルダーでは予約名と既存名を検査します。完全削除は再解析ポイントを追跡せず、対象リンク自体を処理します。
+- ごみ箱はWindows標準シェル操作です。確認、進捗、ごみ箱非対応媒体の挙動はWindowsに従います。使用している旧シェルAPIには長いパスの制限があります。
+- 検索は**ファイル名検索**です。Windows Searchのインデックス、AQS、ファイル内容検索には対応しません。結果全体の再帰監視も行わないため、深い階層の変更は`F5`で再検索してください。
+- 再帰検索中は再解析ポイントへの置換を避けるため、走査中のフォルダーの名前変更・削除が一時的に制限される場合があります。
+- キャンセルはOSのファイルシステム呼出の前後で確認します。応答しないネットワーク等、実行中のOS呼出そのものを即座に中断できるとは限りません。
+- 一覧はシステムアイコンであり、サムネイルのグリッド表示ではありません。プレビュー形式はインストール済みプロバイダーに依存します。
+- 再帰検索等で異なる親フォルダーの項目を複数選択した場合、その組合せの共通右クリックメニューには対応しません。個別選択の標準メニュー、コピー・移動は利用できます。
+- Explorer専用リボン、任意のシェル仮想フォルダー、ごみ箱一覧、ZIP内の仮想閲覧、閉じたタブの復元には対応しません。
+- ファイル操作はWindowsにUndo記録を要求しますが、rfm独自のUndo/Redo履歴画面やキー操作はありません。
+
+## 実装の方針
+
+一覧はWindowsのowner-dataリストビューで、項目ごとのコントロールは作成しません。タブとパンくずはGDI描画を使い、名前・検索キー・並べ替え順・種別・拡張子アイコンをキャッシュします。ディレクトリI/O、検索、ファイル操作はUIスレッドから分離します。標準APIはシェル連携の境界で使い、一覧全体を標準シェルブラウザーへ置き換える方式ではありません。
+
+`windows-sys`、`windows`、`windows-core`はWindows API/COMのバインディングで、外部GUIランタイムではありません。リリースビルドは最適化、LTO、単一codegen unit、シンボル除去を使用します。アイコンとライセンス表示・取得元情報をビルド時に埋め込み、リソースコンパイル失敗時はアイコンなしのexeを生成せずビルドを失敗させます。
+
+日英のUI文字列はexeにコンパイルしており、外部の言語パックや実行時の翻訳カタログは不要です。
+
+`examples/shell_probe.rs`と`benchmark-engines.ps1`は、別アプリのWindows標準`IExplorerBrowser`との比較用ツールで、通常のrfmには組み込みません。過去のWindows 10 x64の限定環境での測定は、現行版、コールド起動、ネットワーク、任意の拡張、システム全体のリソース消費の保証ではありません。比較するアプリの機能も同一ではありません。
+
+比較スクリプトは一時的な設定プロファイルを使用するため、測定用ウィンドウでユーザーの起動先や保存済みウィンドウ配置を上書きしません。
+
+## ソースからのビルド（開発者向け）
+
+一般ユーザーは上記のexeを利用できます。開発にはWindows x64、Rust **1.88.0以上**のMSVCツールチェーン、Visual Studio Build Toolsの「**C++によるデスクトップ開発**」、Windows SDKを用意してください。
 
 ```powershell
 git clone https://github.com/dikmri/rfm.git
 cd rfm
-cargo build --release
-.\target\release\rfm.exe
+rustup toolchain install 1.88.0 --profile minimal --component rustfmt --component clippy --target x86_64-pc-windows-msvc
+cargo +1.88.0 fmt --all -- --check
+cargo +1.88.0 test --locked --all-targets --target x86_64-pc-windows-msvc
+cargo +1.88.0 clippy --locked --all-targets --target x86_64-pc-windows-msvc -- -D warnings
+$env:CARGO_TARGET_X86_64_PC_WINDOWS_MSVC_RUSTFLAGS = "-C target-feature=+crt-static"
+cargo +1.88.0 build --locked --release --target x86_64-pc-windows-msvc
+.\target\x86_64-pc-windows-msvc\release\rfm.exe
 ```
 
-You can also double-click `target\release\rfm.exe`. Pass folders as arguments to open them in separate tabs:
+GitHub Actionsでは`main`へのpush、`main`宛てのpull request、`v*`タグで同じ検証とリリースビルドを行い、Windowsホストランナーに既存のSDKを使用します。配布用exeはVCランタイムを静的リンクします。リリースタグは`v`とCargoのパッケージバージョンを連結した値と完全一致させます。リリースjobはドラフトに両アセットをアップロードし、すべて成功してから最新リリースとして公開します。exeとチェックサムはCIのworkflow artifactにも保存します。各実行の結果は[Actions](https://github.com/dikmri/rfm/actions/workflows/windows.yml)で確認できます。
 
-```powershell
-.\target\release\rfm.exe "C:\Users" "C:\Windows"
-```
+## ライセンス
 
-Command-line folders take precedence over the configured startup location. rfm does not register itself as the default file manager or change Windows file associations.
+rfmのアプリケーションコードは[MITライセンス](LICENSE)、Copyright © 2026 dikmriです。
 
-For development, the repository also provides tests and can be checked with:
+Rust標準ライブラリ、Cargo依存関係、同梱アイコンの著作権表示とライセンス全文は[第三者ライセンス一覧](assets/licenses.txt)にまとめ、exeにも埋め込んでいます。
 
-```powershell
-cargo test
-cargo clippy --all-targets -- -D warnings
-```
+同梱する第三者アイコンには、アプリ本体とは別に次のライセンス表示が適用されます。
 
-## Features
-
-- Independent tabs with navigation history, selection, scroll position, filtering, sorting, and view mode. Returning to a parent folder restores its position and selects the child folder you came from.
-- Details, list, small-icon, and medium-icon views; natural name sorting with folders first; optional extensions, hidden files, and selection checkboxes.
-- A compact native menu bar, clickable breadcrumbs, editable full paths, back/forward history, and a resizable navigation pane. An optional compact command bar is available from the View menu.
-- Windows file icons, file type names, and UI fonts, with DPI-aware layout. File sizes are rounded up to KB.
-- Explorer-compatible copy/cut/paste, new folders, inline rename, Recycle Bin deletion, and confirmed permanent deletion.
-- Windows `IFileOperation` for copying and moving: Windows handles conflicts, replacement, skipping, progress, and cancellation rather than silently overwriting files.
-- Native shell context menus (`IContextMenu2/3`), default-app opening, properties, and path copying. Registered extensions such as Send to, Open with, and 7-Zip remain Windows-managed.
-- Drag files out using Windows data objects; external drops are copied into the current folder after confirmation.
-- Shell change notifications refresh ordinary folder views. Directory reads and file operations run on workers, and obsolete results are discarded.
-
-The menus are rfm's own compact interface, not File Explorer's ribbon. The Share menu opens the Windows shell menu for the selection directly. Shell extensions are queried when their context menu is needed, not all enumerated at startup; their speed and UI also depend on the installed extensions.
-
-## Settings and language
-
-Open **File → Settings…**. Settings are saved to `%LOCALAPPDATA%\rfm\settings.ini`; no extra background service is required.
-
-### Language
-
-Under **Appearance → Language**, choose **Auto (Windows display language)**, **日本語**, or **English**. The choice takes effect **the next time rfm starts**; saving it does not change the current window's language.
-
-Automatic uses Japanese when the Windows user UI language is Japanese, and English otherwise. Application-owned menus, dialogs, help, and messages support both languages. **Windows shell menus, shell extensions, OS-provided folder/type names, and OS error messages remain in the OS language.** File names and paths are never translated.
-
-### Startup and window placement
-
-Choose the home folder (default), the folder in the active tab when rfm last closed, or a specific absolute folder path. This is **not a restore-all-tabs option**. Startup changes apply on the next launch.
-
-Window size, position, and maximized state are saved on normal exit. Exiting while minimized restores the pre-minimized state next time. Windows placement handling adjusts an off-screen saved position when, for example, a monitor has been disconnected.
-
-### Icons
-
-Choose **Windows default (Explorer style)** (default), **Lucide**, or **Tabler** under Appearance. Unlike language changes, icon changes apply immediately when saved and persist across restarts.
-
-The Windows theme uses public theme APIs, actual known-folder icons, and Windows symbol fonts where necessary; it does not extract private Explorer images from DLLs. Lucide and Tabler replace navigation/search/command icons, tab and breadcrumb folders, and the six known-folder icons in the navigation pane. File-list icons, drives, and Quick Access entries with custom icons retain Windows system icons.
-
-The application icon and the optional icon themes are embedded in the executable at multiple resolutions. No adjacent `.ico` file, external icon directory, or runtime SVG renderer is needed. Third-party icon licenses are listed [below](#license).
-
-### Taskbar pinning
-
-Keep the executable in its intended location before pinning it; do not move or delete it afterward. If a pin from an older build shows the wrong icon, unpin it, close the old build, run the updated executable, and pin its running taskbar icon again. rfm does not delete your pins or clear the system-wide icon cache.
-
-## Quick Access
-
-rfm **shares Windows Quick Access**, rather than maintaining a separate favorites file. Pin/unpin changes therefore also affect Windows' shared list.
-
-- Use **File → Add to Quick Access** to add selected folders, or the current folder if no folder is selected.
-- Use **File → Choose folders to add…** for the Windows multi-folder picker.
-- Right-click navigation-pane entries to open, open in another tab, add, or unpin them. The File menu can also unpin the current folder.
-- Adding is not a toggle that removes an existing pin. Unpinning never deletes the actual folder.
-- Pinned and frequently used folders use the Windows ordering. Retrieval errors appear in the status area.
-- Windows may take time to publish changes. rfm refreshes immediately and again after a delay; press `F5` after changes made in another app.
-
-Names and paths appear before slow shell icons finish loading. Refreshes retain the existing list and cached icons while loading, and restore selection and scroll position by path and section. Enumeration and icon loading each use a single worker; old results cannot overwrite a newer list. A non-interruptible Windows icon call can still take time, without requiring the list to wait for all icons.
-
-## Open in terminal
-
-Use **File → Open in terminal**, or **Open in configured terminal** in a folder/background context menu, including navigation-pane folders.
-
-With one folder selected, rfm opens that folder. With one file selected, it uses the file's parent. With no selection, it uses the current folder. Clear a multiple selection before using the File menu command.
-
-The default terminal is **Alacritty**, which must be installed separately. Configure it in **File → Settings… → Terminal**:
-
-- **Executable:** `alacritty.exe` by default. If it is not on `PATH`, browse to its installed executable. Do not include arguments or surrounding quotes in this field.
-- **Arguments:** `--working-directory "{folder}"` by default. `{folder}` is replaced with the target path. For another terminal, use that application's working-directory argument syntax. Empty arguments can also be saved.
-
-Changes apply to the next terminal launch without restarting rfm. The child process's working directory is also set to the target folder, but some terminals override it unless given their own argument.
-
-The executable is started directly, without implicitly invoking `cmd /C` or another shell. Arguments are parsed using Windows quoting rules before substitution within each argument, keeping paths containing spaces or `&` within their original argument boundaries. `.bat`, `.cmd`, and `.lnk` are not accepted in the executable field. rfm does not install a terminal, silently fall back to another one, or change Windows' default terminal or existing shell extensions.
-
-## Search and preview
-
-- Typing in the search box filters names in the current folder immediately. Press `Enter` there for a case-insensitive substring filename search through subfolders.
-- Press `Escape` in the file list to return from search results. Changing the query/location or closing a tab cancels the old search.
-- Recursive search does not follow reparse points such as junctions. Hidden-folder traversal follows the hidden-files setting; inaccessible locations are counted.
-- Toggle preview with `Alt+P` or the View menu. Text preview reads the first **256 KiB** and supports UTF-8, BOM-marked UTF-16, the Windows default code page, and LF/CRLF line endings.
-- Images and other supported files use Windows thumbnail providers; unsupported formats show a reason. rfm does not continuously host arbitrary preview extensions.
-- Preview work starts only when the pane is visible, coalesces selection changes on one worker, and ignores stale results.
-
-## Keyboard shortcuts
-
-| Shortcut | Action |
-| --- | --- |
-| `Ctrl+T` / `Ctrl+W` | Add / close tab; closing the last tab exits |
-| `Ctrl+N` | Open the current folder in a new window |
-| `Ctrl+Tab` / `Ctrl+Shift+Tab` | Next / previous tab |
-| `Ctrl+1`–`Ctrl+8` / `Ctrl+9` | Tab by position / last tab |
-| `Ctrl+L` / `Alt+D` | Edit the full address path |
-| `Ctrl+F` | Focus search; type to filter, `Enter` to search recursively |
-| `Alt+Left` / `Alt+Right` | Back / forward |
-| `Alt+Up` / `Backspace` | Parent folder; Backspace applies when the list has focus |
-| `Enter` / double-click | Open the selection |
-| `Ctrl+Enter` | Open selected folders in separate tabs |
-| `Ctrl+C` / `Ctrl+X` / `Ctrl+V` | Copy / cut / paste |
-| `Ctrl+Shift+C` | Copy selected paths, or the current folder if nothing is selected |
-| `Ctrl+A` | Select all |
-| `Space` | Toggle the focused item's selection when checkboxes are shown |
-| `Ctrl+Shift+N` | New folder |
-| `F2` | Inline rename; `Enter` confirms, `Escape` cancels |
-| `Delete` | Move to Recycle Bin |
-| `Shift+Delete` | Permanently delete, with No selected initially in the confirmation |
-| `Alt+Enter` | Properties of the selection or current folder |
-| `Alt+P` | Toggle preview |
-| `Ctrl+H` | Toggle hidden files |
-| `F5` | Refresh the list, Quick Access, and preview |
-| `Escape` | Cancel rename/address editing, or leave search results |
-| `F1` | Help |
-
-While editing a name, address, or search query, copy/cut/paste/select-all/Backspace remain text-editing operations. Folder refreshes wait during inline rename rather than discarding your input. When extensions are shown, rename initially selects the base name; when hidden, the original extension is preserved.
-
-Tabs can also be added with `+`, closed with `×` or middle-click, and scrolled with the arrows or mouse wheel when they overflow.
-
-## Safety and limitations
-
-- Multi-item copy, move, and delete are **not transactions**. Cancellation or errors can leave some items completed; check both source and destination afterward.
-- Rename and new-folder operations check reserved and existing names. Permanent deletion processes reparse-point links themselves rather than following their targets.
-- Recycle Bin operations use the Windows shell. Confirmation, progress, and media without Recycle Bin support follow Windows behavior. The older shell API used here has long-path limits.
-- Search is **filename search**, not Windows Search indexing, AQS, or file-content search. Search results are not recursively watched; press `F5` to find changes deeper in the tree.
-- During recursive search, renaming/deleting a folder being scanned may be temporarily restricted to guard against its replacement with a reparse point.
-- Cancellation is checked around OS filesystem calls. An OS call already blocked on an unresponsive network cannot necessarily be interrupted immediately.
-- The file list uses system icons, not a thumbnail grid. Preview formats depend on installed thumbnail providers.
-- A common shell context menu is not supported for multiple items from different parent folders, such as recursive search results. Single-item menus and copy/move remain available.
-- Explorer's ribbon, arbitrary shell virtual folders, Recycle Bin browsing, virtual browsing inside ZIP files, and reopening closed tabs are not supported.
-- File operations request Windows Undo records, but rfm has no custom Undo/Redo history UI or shortcuts.
-
-## Implementation notes
-
-The file list is an owner-data Windows list view, not one control per file. Tabs and breadcrumbs use GDI; names, search keys, sort order, file types, and extension icons are cached. Directory I/O, search, and file operations run off the UI thread. Windows APIs are used at shell integration boundaries rather than replacing the whole file view with a shell browser.
-
-The `windows-sys`, `windows`, and `windows-core` dependencies are Windows API/COM bindings, not external GUI runtimes. Release builds use optimization, LTO, a single codegen unit, and symbol stripping. Icons, their license notices, and source metadata are embedded at build time; resource compilation failure fails the build rather than producing an executable without its icons.
-
-Japanese and English UI strings are compiled into the executable; no external language packs or runtime translation catalogs are required.
-
-`examples/shell_probe.rs` and `benchmark-engines.ps1` are optional comparison tools for a separate Windows `IExplorerBrowser` application, not part of the normal app. Historical measurements on one Windows 10 x64 environment are not guarantees for the current version, cold starts, network folders, installed extensions, or system-wide resource use. The compared applications do not have identical features.
-
-The comparison script uses a temporary settings profile, so its app windows do not replace your saved startup folder or window placement.
-
-## License
-
-rfm's application code is licensed under the [MIT License](LICENSE), copyright © 2026 dikmri.
-
-Bundled third-party icons have their own notices, separate from the application's MIT license:
-
-- [Lucide](https://lucide.dev/): ISC, with MIT for Feather-derived icons. See the full [Lucide license notices](assets/icons/lucide/LICENSE).
-- [Tabler Icons](https://tabler.io/icons): MIT. See the full [Tabler license](assets/icons/tabler/LICENSE).
-- [Icon source metadata](assets/icons/sources.json) records upstream URLs, pinned revisions, and rasterization details. Both license files and this metadata are also embedded in the executable.
+- [Lucide](https://lucide.dev/)：ISCと、Feather由来アイコンのMIT。[ライセンス表示全文](assets/icons/lucide/LICENSE)。
+- [Tabler Icons](https://tabler.io/icons)：MIT。[ライセンス表示全文](assets/icons/tabler/LICENSE)。
+- [取得元情報](assets/icons/sources.json)に上流URL、固定リビジョン、画像変換条件を記録しています。両ライセンス全文とこの情報はexeにも埋め込みます。

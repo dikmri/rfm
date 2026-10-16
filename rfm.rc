@@ -1,3 +1,5 @@
 1 ICON "assets/rfm.ico"
 
 #include "assets/icons/icons.rc"
+
+3003 RCDATA "assets/licenses.txt"

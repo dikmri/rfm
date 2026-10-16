@@ -3,6 +3,7 @@ fn main() {
     println!("cargo:rerun-if-changed=rfm.rc");
     println!("cargo:rerun-if-changed=assets/rfm.ico");
     println!("cargo:rerun-if-changed=assets/icons");
+    println!("cargo:rerun-if-changed=assets/licenses.txt");
     embed_resource::compile_for("rfm.rc", ["rfm"], embed_resource::NONE)
         .manifest_required()
         .expect("compile rfm application and chrome icon resources");

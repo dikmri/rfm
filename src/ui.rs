@@ -1,6 +1,6 @@
 use crate::{
     actions, breadcrumb, chrome, directory_events, fs, icons, preferences, preview, quick_access,
-    settings, shell, terminal,
+    settings, shell, terminal, update_install, update_net, update_ui,
 };
 use std::{
     cell::{Cell, RefCell},
@@ -82,6 +82,7 @@ const ID_SHARE: usize = 242;
 const ID_SETTINGS: usize = 243;
 const ID_OPEN_TERMINAL: usize = 244;
 const ID_HISTORY: usize = 245;
+const ID_CHECK_UPDATES: usize = 246;
 const REFRESH_TIMER: usize = 1;
 const PIN_REFRESH_TIMER: usize = 2;
 
@@ -312,6 +313,10 @@ impl RenameTarget {
 }
 
 enum Completion {
+    UpdateChecked {
+        manual: bool,
+        result: io::Result<Option<update_net::Release>>,
+    },
     Listing {
         id: u64,
         request: u64,
@@ -424,6 +429,9 @@ struct App {
     shortcuts: Rc<Vec<Place>>,
     show_hidden: bool,
     busy: bool,
+    update_checking: bool,
+    update_available: Option<update_net::Release>,
+    update_notice: Option<String>,
     tx: Sender<Completion>,
     rx: Receiver<Completion>,
     icons: HashMap<(bool, OsString), i32>,
@@ -935,6 +943,9 @@ impl App {
                 shortcuts: Rc::new(Vec::new()),
                 show_hidden: false,
                 busy: false,
+                update_checking: false,
+                update_available: None,
+                update_notice: None,
                 tx,
                 rx,
                 icons: HashMap::new(),
@@ -1068,6 +1079,7 @@ impl App {
                             tr!("プロパティ\tAlt+Enter", "Properties\tAlt+Enter"),
                         ),
                         (ID_SETTINGS, tr!("設定…", "Settings…")),
+                        (ID_CHECK_UPDATES, tr!("更新を確認…", "Check for updates…")),
                         (ID_HELP, tr!("操作方法\tF1", "Help\tF1")),
                         (ID_EXIT, tr!("終了", "Exit")),
                     ],
@@ -2283,6 +2295,46 @@ impl App {
     fn completions(&mut self) {
         while let Ok(completion) = self.rx.try_recv() {
             match completion {
+                Completion::UpdateChecked { manual, result } => {
+                    self.update_checking = false;
+                    match result {
+                        Ok(Some(release)) => {
+                            self.update_notice = Some(tr_format!(
+                                "rfm {} に更新できます",
+                                "rfm {} is available",
+                                release.version
+                            ));
+                            self.update_available = Some(release);
+                        }
+                        Ok(None) => {
+                            self.update_notice = None;
+                            if manual {
+                                unsafe {
+                                    MessageBoxW(
+                                        self.hwnd,
+                                        wide(tr_format!(
+                                            "新しい安定版はありません。現在のバージョン: {}",
+                                            "No newer stable release is available. Current version: {}",
+                                            env!("CARGO_PKG_VERSION")
+                                        )).as_ptr(),
+                                        tr_w!("rfm — 更新", "rfm — Update"),
+                                        MB_OK | MB_ICONINFORMATION,
+                                    );
+                                }
+                            }
+                        }
+                        Err(err) => {
+                            self.update_notice = Some(tr_format!(
+                                "更新を確認できません: {err}",
+                                "Could not check for updates: {err}"
+                            ));
+                            if manual {
+                                error(self.hwnd, self.update_notice.as_deref().unwrap_or_default());
+                            }
+                        }
+                    }
+                    self.update_status();
+                }
                 Completion::Listing {
                     id,
                     request,
@@ -2638,6 +2690,10 @@ impl App {
                 "    |    Quick access: {warning}"
             ));
         }
+        if let Some(notice) = &self.update_notice {
+            status.push_str("    |    ");
+            status.push_str(notice);
+        }
         set_text(self.status, status);
         if let Some(panel) = self.preview
             && self.preview_visible
@@ -2756,11 +2812,131 @@ impl App {
         }
     }
 
+    fn check_updates(&mut self, manual: bool) {
+        if self.update_checking || update_ui::is_working() {
+            if manual {
+                unsafe {
+                    MessageBoxW(
+                        self.hwnd,
+                        tr_w!(
+                            "前回の更新確認・ダウンロードが終了するまでお待ちください。",
+                            "Wait for the previous update check or download to finish."
+                        ),
+                        tr_w!("rfm — 更新", "rfm — Update"),
+                        MB_OK | MB_ICONINFORMATION,
+                    );
+                }
+            }
+            return;
+        }
+        self.update_checking = true;
+        self.update_notice = Some(tr!("更新を確認しています…", "Checking for updates…").into());
+        self.update_status();
+        let sender = self.tx.clone();
+        let hwnd = self.hwnd as usize;
+        if let Err(err) = std::thread::Builder::new()
+            .name("rfm-update-check".into())
+            .spawn(move || {
+                let result = update_net::check_latest();
+                if sender
+                    .send(Completion::UpdateChecked { manual, result })
+                    .is_ok()
+                {
+                    unsafe {
+                        PostMessageW(hwnd as HWND, READY, 0, 0);
+                    }
+                }
+            })
+        {
+            self.update_checking = false;
+            self.update_notice = Some(tr_format!(
+                "更新確認を開始できません: {err}",
+                "Could not start the update check: {err}"
+            ));
+            self.update_status();
+        }
+    }
+
+    fn suggest_update(&mut self) {
+        if self.busy
+            || self.tabs.is_empty()
+            || self.update_available.is_none()
+            || LABEL_EDIT.with(|edit| edit.borrow().is_some())
+            || unsafe { GetForegroundWindow() != self.hwnd || IsIconic(self.hwnd) != 0 }
+        {
+            return;
+        }
+        let release = self.update_available.take().expect("checked above");
+        let question = tr_format!(
+            "rfm {} が利用できます（現在: {}）。\n\n公式GitHubリリースからダウンロード・検証し、更新後に再起動します。開いているタブのフォルダーは復元します。\n\n{}\n\n今すぐ更新しますか？",
+            "rfm {} is available (installed: {}).\n\nDownload and verify the official GitHub release, then update and restart rfm. Your open folder tabs will be restored.\n\n{}\n\nUpdate now?",
+            release.version,
+            env!("CARGO_PKG_VERSION"),
+            release.notes_url
+        );
+        let accepted = unsafe {
+            MessageBoxW(
+                self.hwnd,
+                wide(question).as_ptr(),
+                tr_w!("rfm — 更新のお知らせ", "rfm — Update available"),
+                MB_YESNO | MB_ICONINFORMATION | MB_DEFBUTTON2,
+            ) == IDYES
+        };
+        if !accepted {
+            self.update_notice =
+                Some(tr!("今回は更新しませんでした。", "Update postponed.").into());
+            self.update_status();
+            return;
+        }
+        let restart = update_install::Restart {
+            folders: self.tabs.iter().map(|tab| tab.path.clone()).collect(),
+            active: self.active,
+            japanese: crate::i18n::is_japanese(),
+        };
+        match update_ui::prepare(self.hwnd, release, restart) {
+            Ok(Some(pending)) => {
+                if let Err(err) = settings::save_session(self.hwnd, &self.current().path) {
+                    error(
+                        self.hwnd,
+                        tr_format!(
+                            "再起動前の状態を保存できないため更新を中止しました。\n{err}",
+                            "The update was cancelled because the session could not be saved.\n{err}"
+                        ),
+                    );
+                    return;
+                }
+                match pending.commit() {
+                    Ok(()) => unsafe {
+                        DestroyWindow(self.hwnd);
+                    },
+                    Err(err) => error(self.hwnd, err),
+                }
+            }
+            Ok(None) => {
+                self.update_notice =
+                    Some(tr!("更新を取り消しました。", "Update cancelled.").into());
+                self.update_status();
+            }
+            Err(err) => {
+                self.update_notice = Some(
+                    tr!(
+                        "更新に失敗しました。現在のrfmはそのまま使用できます。",
+                        "Update failed. You can continue using the installed rfm."
+                    )
+                    .into(),
+                );
+                self.update_status();
+                error(self.hwnd, err);
+            }
+        }
+    }
+
     fn command(&mut self, id: usize) {
         if self.tabs.is_empty() {
             return;
         }
         match id {
+            ID_CHECK_UPDATES => self.check_updates(true),
             ID_SETTINGS => {
                 self.cancel_rename();
                 if let Err(err) = preferences::show(self.hwnd, self.font, &self.current().path) {
@@ -4071,23 +4247,38 @@ pub fn run() {
                 ),
             );
         }
-        let paths: Vec<PathBuf> = std::env::args_os()
-            .skip(1)
-            .map(|p| {
-                let path = PathBuf::from(p);
-                if path.is_absolute() {
-                    path
-                } else {
-                    std::env::current_dir()
-                        .unwrap_or_else(|_| home())
-                        .join(path)
+        let resumed = match update_install::resume_from_args() {
+            Ok(resumed) => resumed,
+            Err(err) => {
+                error(null_mut(), err);
+                if com >= 0 {
+                    OleUninitialize();
                 }
-            })
-            .collect();
-        let paths = if paths.is_empty() {
-            vec![settings::startup_path(&saved, home())]
+                return;
+            }
+        };
+        let (paths, resumed_active) = if let Some(restart) = resumed {
+            (restart.folders, Some(restart.active))
         } else {
-            paths
+            let paths: Vec<PathBuf> = std::env::args_os()
+                .skip(1)
+                .map(|p| {
+                    let path = PathBuf::from(p);
+                    if path.is_absolute() {
+                        path
+                    } else {
+                        std::env::current_dir()
+                            .unwrap_or_else(|_| home())
+                            .join(path)
+                    }
+                })
+                .collect();
+            let paths = if paths.is_empty() {
+                vec![settings::startup_path(&saved, home())]
+            } else {
+                paths
+            };
+            (paths, None)
         };
         let hwnd = CreateWindowExW(
             WS_EX_ACCEPTFILES | WS_EX_CONTROLPARENT,
@@ -4118,7 +4309,7 @@ pub fn run() {
                 ),
             );
         }
-        let app = match App::new(hwnd, paths, saved.appearance.icon_theme) {
+        let mut app = match App::new(hwnd, paths, saved.appearance.icon_theme) {
             Ok(app) => app,
             Err(err) => {
                 error(hwnd, err);
@@ -4128,6 +4319,11 @@ pub fn run() {
                 return;
             }
         };
+        if let Some(active) = resumed_active.filter(|&active| active < app.tabs.len()) {
+            app.active = active;
+            app.update_tab_bar();
+            app.show_current();
+        }
         app.layout();
         APP.with(|state| *state.borrow_mut() = Some(app));
         ShowWindow(
@@ -4143,6 +4339,16 @@ pub fn run() {
                 SetFocus(app.list);
             }
         });
+        if let Err(err) = update_install::acknowledge_restart() {
+            error(hwnd, err);
+            DestroyWindow(hwnd);
+        } else {
+            APP.with(|state| {
+                if let Some(app) = state.borrow_mut().as_mut() {
+                    app.check_updates(false);
+                }
+            });
+        }
         let mut msg: MSG = zeroed();
         loop {
             let result = GetMessageW(&mut msg, null_mut(), 0, 0);
@@ -4168,6 +4374,7 @@ pub fn run() {
             APP.with(|state| {
                 if let Some(app) = state.borrow_mut().as_mut() {
                     app.completions();
+                    app.suggest_update();
                 }
             });
         }

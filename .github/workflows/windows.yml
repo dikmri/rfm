@@ -1,0 +1,105 @@
+name: Windows build and release
+
+on:
+  push:
+    branches: [main]
+    tags: ['v*']
+  pull_request:
+    branches: [main]
+
+permissions:
+  contents: read
+
+defaults:
+  run:
+    shell: pwsh
+
+jobs:
+  build:
+    name: Windows x64 / Rust 1.88.0
+    runs-on: windows-latest
+    steps:
+      - name: Check out source
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+        with:
+          persist-credentials: false
+
+      - name: Install minimum supported Rust toolchain
+        run: rustup toolchain install 1.88.0 --profile minimal --component rustfmt --component clippy --target x86_64-pc-windows-msvc
+
+      - name: Check release tag against Cargo version
+        if: startsWith(github.ref, 'refs/tags/')
+        run: |
+          $PSNativeCommandUseErrorActionPreference = $true
+          $metadata = cargo +1.88.0 metadata --locked --no-deps --format-version 1 | ConvertFrom-Json
+          $package = @($metadata.packages | Where-Object { $_.name -eq 'rfm' })
+          if ($package.Count -ne 1) { throw 'Expected exactly one rfm package.' }
+          $version = $package[0].version
+          if ($env:GITHUB_REF_NAME -cne "v$version") {
+            throw "Tag '$env:GITHUB_REF_NAME' must match Cargo version 'v$version'."
+          }
+          if ($version -notmatch '^\d+\.\d+\.\d+$') {
+            throw 'Only stable versions may be published as the latest release.'
+          }
+
+      - name: Check formatting
+        run: cargo +1.88.0 fmt --all -- --check
+
+      - name: Run tests
+        run: cargo +1.88.0 test --locked --all-targets --target x86_64-pc-windows-msvc
+
+      - name: Run Clippy
+        run: cargo +1.88.0 clippy --locked --all-targets --target x86_64-pc-windows-msvc -- -D warnings
+
+      - name: Build release executable with the installed Windows SDK
+        env:
+          CARGO_TARGET_X86_64_PC_WINDOWS_MSVC_RUSTFLAGS: "-C target-feature=+crt-static"
+        run: cargo +1.88.0 build --locked --release --target x86_64-pc-windows-msvc
+
+      - name: Prepare executable and checksum
+        run: |
+          New-Item -ItemType Directory -Path dist | Out-Null
+          $asset = 'rfm-windows-x86_64.exe'
+          Copy-Item 'target/x86_64-pc-windows-msvc/release/rfm.exe' "dist/$asset"
+          $hash = (Get-FileHash "dist/$asset" -Algorithm SHA256).Hash.ToLowerInvariant()
+          [System.IO.File]::WriteAllText(
+            (Join-Path $PWD "dist/$asset.sha256"),
+            "$hash  $asset`n",
+            [System.Text.UTF8Encoding]::new($false))
+
+      - name: Upload Windows x64 artifact
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: rfm-windows-x86_64
+          path: |
+            dist/rfm-windows-x86_64.exe
+            dist/rfm-windows-x86_64.exe.sha256
+          if-no-files-found: error
+
+  release:
+    name: Publish verified release assets
+    needs: build
+    if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')
+    runs-on: windows-latest
+    permissions:
+      actions: read
+      contents: write
+    env:
+      GH_TOKEN: ${{ github.token }}
+      GH_REPO: ${{ github.repository }}
+    steps:
+      - name: Download this run's verified build artifact
+        run: gh run download $env:GITHUB_RUN_ID --name rfm-windows-x86_64 --dir dist
+
+      - name: Stage both assets in a draft, then publish as latest
+        run: |
+          $PSNativeCommandUseErrorActionPreference = $true
+          $asset = 'rfm-windows-x86_64.exe'
+          $hash = (Get-FileHash "dist/$asset" -Algorithm SHA256).Hash.ToLowerInvariant()
+          $checksum = [System.IO.File]::ReadAllText((Join-Path $PWD "dist/$asset.sha256"))
+          if ($checksum -cne "$hash  $asset`n") {
+            throw 'Artifact checksum does not match the executable or required format.'
+          }
+          # A failed upload leaves a draft, never a partially published release.
+          gh release create $env:GITHUB_REF_NAME "dist/$asset" "dist/$asset.sha256" --verify-tag --draft --title $env:GITHUB_REF_NAME --generate-notes
+          gh release edit $env:GITHUB_REF_NAME --draft=false --latest
