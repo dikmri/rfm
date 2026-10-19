@@ -1,17 +1,18 @@
-//! Native INI preferences, with atomic Appearance writes and independent session sections.
+//! Native INI preferences and an atomically replaced full-tab session.
 
 use std::ffi::{OsStr, OsString};
 use std::fs::{self, File, OpenOptions};
-use std::io::{self, Write};
+use std::io::{self, BufReader, BufWriter, Write};
 use std::mem::size_of;
 use std::os::windows::ffi::{OsStrExt, OsStringExt};
 use std::os::windows::fs::OpenOptionsExt;
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicU64, Ordering};
 
 use windows_sys::Win32::Foundation::{GetLastError, HWND, SetLastError};
 use windows_sys::Win32::System::WindowsProgramming::{
     GetPrivateProfileStringW, GetPrivateProfileStructW, WritePrivateProfileSectionW,
-    WritePrivateProfileStringW, WritePrivateProfileStructW,
+    WritePrivateProfileStructW,
 };
 use windows_sys::Win32::UI::WindowsAndMessaging::{
     GetWindowPlacement, SW_FORCEMINIMIZE, SW_HIDE, SW_MINIMIZE, SW_SHOWMAXIMIZED, SW_SHOWMINIMIZED,
@@ -23,7 +24,7 @@ use windows_sys::core::{PCWSTR, w};
 pub enum StartupMode {
     #[default]
     Home,
-    LastFolder,
+    LastSession,
     CustomFolder,
 }
 
@@ -67,9 +68,33 @@ pub struct Settings {
     pub startup: Startup,
     pub terminal: Terminal,
     pub appearance: Appearance,
-    pub last_folder: Option<PathBuf>,
+    pub session: Option<Session>,
     pub placement: Option<Placement>,
 }
+
+#[derive(Debug, PartialEq, Eq)]
+pub struct Session {
+    pub folders: Vec<PathBuf>,
+    pub active: usize,
+}
+
+impl Session {
+    fn single(folder: PathBuf) -> Self {
+        Self {
+            folders: vec![folder],
+            active: 0,
+        }
+    }
+}
+
+// Numeric UTF-16 preserves Windows paths, including unpaired surrogates.
+#[derive(serde::Serialize, serde::Deserialize)]
+struct StoredSession {
+    folders: Vec<Vec<u16>>,
+    active: usize,
+}
+
+static NEXT_SESSION_FILE: AtomicU64 = AtomicU64::new(0);
 
 pub struct Placement(WINDOWPLACEMENT);
 
@@ -120,14 +145,17 @@ impl Placement {
     }
 }
 
-pub fn startup_path(settings: &Settings, home: PathBuf) -> PathBuf {
+pub fn startup_session(settings: &mut Settings, home: PathBuf) -> Session {
     match settings.startup.mode {
-        StartupMode::Home => home,
-        StartupMode::LastFolder => settings.last_folder.clone().unwrap_or(home),
+        StartupMode::Home => Session::single(home),
+        StartupMode::LastSession => settings
+            .session
+            .take()
+            .unwrap_or_else(|| Session::single(home)),
         StartupMode::CustomFolder if !settings.startup.custom_folder.as_os_str().is_empty() => {
-            settings.startup.custom_folder.clone()
+            Session::single(settings.startup.custom_folder.clone())
         }
-        StartupMode::CustomFolder => home,
+        StartupMode::CustomFolder => Session::single(home),
     }
 }
 
@@ -143,7 +171,11 @@ pub fn save_preferences(
     save_preferences_at(&settings_path()?, startup, terminal, appearance)
 }
 
-pub fn save_session(hwnd: HWND, folder: &Path) -> io::Result<()> {
+pub fn save_session<'a>(
+    hwnd: HWND,
+    folders: impl Iterator<Item = &'a Path>,
+    active: usize,
+) -> io::Result<()> {
     let mut native = WINDOWPLACEMENT {
         length: size_of::<WINDOWPLACEMENT>() as u32,
         ..Default::default()
@@ -163,7 +195,7 @@ pub fn save_session(hwnd: HWND, folder: &Path) -> io::Result<()> {
             "The window position to save is invalid."
         ))
     })?;
-    save_session_at(&settings_path()?, folder, &placement)
+    save_session_at(&settings_path()?, folders, active, &placement)
 }
 
 fn settings_path() -> io::Result<PathBuf> {
@@ -273,15 +305,16 @@ fn load_at(path: &Path) -> io::Result<Settings> {
     }
     let file = wide_file(path)?;
     let mode = read_value(&file, w!("Startup"), w!("Mode"), w!(""))?;
-    let mode = if mode.iter().copied().eq("LastFolder".encode_utf16()) {
-        StartupMode::LastFolder
+    let mode = if mode.iter().copied().eq("LastSession".encode_utf16())
+        || mode.iter().copied().eq("LastFolder".encode_utf16())
+    {
+        StartupMode::LastSession
     } else if mode.iter().copied().eq("CustomFolder".encode_utf16()) {
         StartupMode::CustomFolder
     } else {
         StartupMode::Home
     };
     let custom = read_value(&file, w!("Startup"), w!("CustomFolder"), w!(""))?;
-    let last = read_value(&file, w!("Session"), w!("LastFolder"), w!(""))?;
     let executable = read_value(&file, w!("Terminal"), w!("Executable"), w!("alacritty.exe"))?;
     let arguments = read_value(
         &file,
@@ -326,7 +359,7 @@ fn load_at(path: &Path) -> io::Result<Settings> {
             icon_theme,
             language,
         },
-        last_folder: (!last.is_empty()).then(|| PathBuf::from(OsString::from_wide(&last))),
+        session: load_session_at(path, &file)?,
         placement: (placement != 0)
             .then(|| Placement::from_native(native))
             .flatten(),
@@ -360,7 +393,7 @@ fn save_preferences_at(
 ) -> io::Result<()> {
     let mode = match startup.mode {
         StartupMode::Home => "Mode=Home\0CustomFolder=",
-        StartupMode::LastFolder => "Mode=LastFolder\0CustomFolder=",
+        StartupMode::LastSession => "Mode=LastSession\0CustomFolder=",
         StartupMode::CustomFolder => "Mode=CustomFolder\0CustomFolder=",
     };
     let mut section = Vec::with_capacity(mode.len() + startup.custom_folder.as_os_str().len() + 4);
@@ -434,34 +467,61 @@ fn save_preferences_at(
     Ok(())
 }
 
-fn save_session_at(path: &Path, folder: &Path, placement: &Placement) -> io::Result<()> {
-    let mut value = Vec::with_capacity(folder.as_os_str().len() + 3);
-    append_quoted_value(&mut value, folder.as_os_str())?;
-    if value.len() > 32_767 {
+fn load_session_at(path: &Path, ini: &[u16]) -> io::Result<Option<Session>> {
+    let stored: StoredSession = match File::open(path.with_file_name("session.json")) {
+        Ok(file) => serde_json::from_reader(BufReader::new(file))
+            .map_err(|error| io::Error::new(io::ErrorKind::InvalidData, error))?,
+        Err(error) if error.kind() == io::ErrorKind::NotFound => {
+            // The previous release saved only its active folder.
+            let folder = read_value(ini, w!("Session"), w!("LastFolder"), w!(""))?;
+            return Ok((!folder.is_empty())
+                .then(|| Session::single(PathBuf::from(OsString::from_wide(&folder)))));
+        }
+        Err(error) => return Err(error),
+    };
+    if stored.folders.is_empty() || stored.active >= stored.folders.len() {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            tr!(
+                "保存されたタブの情報が無効です。",
+                "The saved tab session is invalid."
+            ),
+        ));
+    }
+    Ok(Some(Session {
+        folders: stored
+            .folders
+            .into_iter()
+            .map(|folder| PathBuf::from(OsString::from_wide(&folder)))
+            .collect(),
+        active: stored.active,
+    }))
+}
+
+fn save_session_at<'a>(
+    path: &Path,
+    folders: impl Iterator<Item = &'a Path>,
+    active: usize,
+    placement: &Placement,
+) -> io::Result<()> {
+    let stored = StoredSession {
+        folders: folders
+            .map(|folder| folder.as_os_str().encode_wide().collect())
+            .collect(),
+        active,
+    };
+    if stored.folders.is_empty() || active >= stored.folders.len() {
         return Err(io::Error::new(
             io::ErrorKind::InvalidInput,
             tr!(
-                "保存するフォルダーのパスが長すぎます。",
-                "The folder path is too long to save."
+                "保存するタブの情報が無効です。",
+                "The tab session to save is invalid."
             ),
         ));
     }
     let file = wide_file(path)?;
     prepare_file(path)?;
     unsafe {
-        SetLastError(0);
-        if WritePrivateProfileStringW(
-            w!("Session"),
-            w!("LastFolder"),
-            value.as_ptr(),
-            file.as_ptr(),
-        ) == 0
-        {
-            return Err(last_error(tr!(
-                "前回のフォルダーの保存",
-                "Saving the last folder"
-            )));
-        }
         SetLastError(0);
         if WritePrivateProfileStructW(
             w!("Window"),
@@ -477,7 +537,35 @@ fn save_session_at(path: &Path, folder: &Path, placement: &Placement) -> io::Res
             )));
         }
     }
-    Ok(())
+    let destination = path.with_file_name("session.json");
+    let (temporary, output) = loop {
+        let id = NEXT_SESSION_FILE.fetch_add(1, Ordering::Relaxed);
+        let temporary =
+            path.with_file_name(format!(".rfm-session-{}-{id}.tmp", std::process::id()));
+        match OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .open(&temporary)
+        {
+            Ok(output) => break (temporary, output),
+            Err(error) if error.kind() == io::ErrorKind::AlreadyExists => continue,
+            Err(error) => return Err(error),
+        }
+    };
+    let mut writer = BufWriter::new(output);
+    let written = (|| {
+        serde_json::to_writer(&mut writer, &stored).map_err(io::Error::other)?;
+        writer.flush()?;
+        writer.get_ref().sync_all()
+    })();
+    // Close the temporary file before the Windows rename. A failed replacement
+    // leaves the entire previous tab list intact, never a partially written list.
+    drop(writer);
+    let replaced = written.and_then(|()| fs::rename(&temporary, &destination));
+    if replaced.is_err() {
+        let _ = fs::remove_file(&temporary);
+    }
+    replaced
 }
 
 #[cfg(test)]
@@ -541,17 +629,43 @@ mod tests {
         assert_eq!(settings.startup.mode, StartupMode::Home);
         assert_eq!(settings.appearance.language, crate::i18n::Language::System);
         assert!(settings.placement.is_none());
-        assert_eq!(startup_path(&settings, home.clone()), home);
-        settings.startup.mode = StartupMode::LastFolder;
-        assert_eq!(startup_path(&settings, home.clone()), home);
+        assert_eq!(
+            startup_session(&mut settings, home.clone()),
+            Session::single(home.clone())
+        );
+        settings.startup.mode = StartupMode::LastSession;
+        assert_eq!(
+            startup_session(&mut settings, home.clone()),
+            Session::single(home.clone())
+        );
         settings.startup.mode = StartupMode::CustomFolder;
-        assert_eq!(startup_path(&settings, home.clone()), home);
+        assert_eq!(
+            startup_session(&mut settings, home.clone()),
+            Session::single(home.clone())
+        );
         let unavailable = PathBuf::from(r"Z:\未接続\folder");
         settings.startup.custom_folder = unavailable.clone();
-        assert_eq!(startup_path(&settings, home.clone()), unavailable);
-        settings.startup.mode = StartupMode::LastFolder;
-        settings.last_folder = Some(unavailable.clone());
-        assert_eq!(startup_path(&settings, home), unavailable);
+        settings.session = Some(Session {
+            folders: vec![PathBuf::from(r"D:\first"), PathBuf::from(r"E:\second")],
+            active: 1,
+        });
+        assert_eq!(
+            startup_session(&mut settings, home.clone()),
+            Session::single(unavailable)
+        );
+        settings.startup.mode = StartupMode::Home;
+        assert_eq!(
+            startup_session(&mut settings, home.clone()),
+            Session::single(home.clone())
+        );
+        settings.startup.mode = StartupMode::LastSession;
+        assert_eq!(
+            startup_session(&mut settings, home),
+            Session {
+                folders: vec![PathBuf::from(r"D:\first"), PathBuf::from(r"E:\second")],
+                active: 1
+            }
+        );
     }
 
     #[test]
@@ -576,11 +690,17 @@ mod tests {
         };
         save_preferences_at(&file, &startup, &terminal, &Appearance::default()).unwrap();
         let placement = Placement::from_native(native_placement(SW_SHOWNORMAL, 0)).unwrap();
-        save_session_at(&file, &folder, &placement).unwrap();
+        let folders = vec![
+            PathBuf::from(r"D:\first"),
+            folder.clone(),
+            PathBuf::from(r"E:\last"),
+            folder.clone(),
+        ];
+        save_session_at(&file, folders.iter().map(PathBuf::as_path), 1, &placement).unwrap();
         let loaded = load_at(&file).unwrap();
         assert_eq!(loaded.startup.mode, startup.mode);
         assert_eq!(loaded.startup.custom_folder, folder);
-        assert_eq!(loaded.last_folder.as_ref(), Some(&folder));
+        assert_eq!(loaded.session, Some(Session { folders, active: 1 }));
         assert_eq!(loaded.terminal.executable, terminal.executable);
         assert_eq!(loaded.terminal.arguments, terminal.arguments);
     }
@@ -590,13 +710,13 @@ mod tests {
         let temp = Temp::new();
         let file = temp.0.join("settings.ini");
         let mut startup = Startup {
-            mode: StartupMode::LastFolder,
+            mode: StartupMode::LastSession,
             custom_folder: PathBuf::from(r"C:\指定フォルダー"),
         };
         let placement = Placement::from_native(native_placement(SW_SHOWMAXIMIZED, 0)).unwrap();
         let first = Path::new(r"D:\前回");
         let second = Path::new(r"E:\今回");
-        save_session_at(&file, first, &placement).unwrap();
+        save_session_at(&file, std::iter::once(first), 0, &placement).unwrap();
         save_preferences_at(
             &file,
             &startup,
@@ -605,11 +725,11 @@ mod tests {
         )
         .unwrap();
         let loaded = load_at(&file).unwrap();
-        assert_eq!(loaded.last_folder.as_deref(), Some(first));
+        assert_eq!(loaded.session, Some(Session::single(first.to_owned())));
         assert_eq!(loaded.placement.unwrap().show_command(), SW_SHOWMAXIMIZED);
-        save_session_at(&file, second, &placement).unwrap();
+        save_session_at(&file, std::iter::once(second), 0, &placement).unwrap();
         let loaded = load_at(&file).unwrap();
-        assert_eq!(loaded.startup.mode, StartupMode::LastFolder);
+        assert_eq!(loaded.startup.mode, StartupMode::LastSession);
         assert_eq!(loaded.startup.custom_folder, startup.custom_folder);
         startup.mode = StartupMode::Home;
         save_preferences_at(
@@ -621,7 +741,7 @@ mod tests {
         .unwrap();
         let loaded = load_at(&file).unwrap();
         assert_eq!(loaded.startup.mode, StartupMode::Home);
-        assert_eq!(loaded.last_folder.as_deref(), Some(second));
+        assert_eq!(loaded.session, Some(Session::single(second.to_owned())));
         assert_eq!(loaded.placement.unwrap().0.rcNormalPosition.left, -1600);
     }
 
@@ -649,7 +769,7 @@ mod tests {
     }
 
     #[test]
-    fn adding_terminal_settings_preserves_legacy_startup_and_empty_arguments() {
+    fn legacy_single_folder_migrates_without_losing_preferences() {
         let temp = Temp::new();
         let file = temp.0.join("old-settings.ini");
         let legacy = "[Startup]\r\nMode=LastFolder\r\nCustomFolder=\"C:\\custom\"\r\n[Session]\r\nLastFolder=\"D:\\previous\"\r\n";
@@ -659,8 +779,11 @@ mod tests {
             .collect();
         fs::write(&file, encoded).unwrap();
         let old = load_at(&file).unwrap();
-        assert_eq!(old.startup.mode, StartupMode::LastFolder);
-        assert_eq!(old.last_folder.as_deref(), Some(Path::new(r"D:\previous")));
+        assert_eq!(old.startup.mode, StartupMode::LastSession);
+        assert_eq!(
+            old.session,
+            Some(Session::single(PathBuf::from(r"D:\previous")))
+        );
         assert_eq!(old.terminal.executable, Path::new("alacritty.exe"));
         assert_eq!(old.appearance.icon_theme, IconTheme::Windows);
         assert_eq!(old.appearance.language, crate::i18n::Language::System);
@@ -670,15 +793,21 @@ mod tests {
         };
         save_preferences_at(&file, &old.startup, &terminal, &old.appearance).unwrap();
         let placement = Placement::from_native(native_placement(SW_SHOWNORMAL, 0)).unwrap();
-        save_session_at(&file, Path::new(r"E:\current"), &placement).unwrap();
+        save_session_at(
+            &file,
+            std::iter::once(Path::new(r"E:\current")),
+            0,
+            &placement,
+        )
+        .unwrap();
         let loaded = load_at(&file).unwrap();
-        assert_eq!(loaded.startup.mode, StartupMode::LastFolder);
+        assert_eq!(loaded.startup.mode, StartupMode::LastSession);
         assert_eq!(loaded.startup.custom_folder, Path::new(r"C:\custom"));
         assert_eq!(loaded.terminal.executable, terminal.executable);
         assert!(loaded.terminal.arguments.is_empty());
         assert_eq!(
-            loaded.last_folder.as_deref(),
-            Some(Path::new(r"E:\current"))
+            loaded.session,
+            Some(Session::single(PathBuf::from(r"E:\current")))
         );
     }
 
@@ -696,7 +825,7 @@ mod tests {
         };
         let folder = Path::new(r"D:\作業中");
         let placement = Placement::from_native(native_placement(SW_SHOWMAXIMIZED, 0)).unwrap();
-        save_session_at(&file, folder, &placement).unwrap();
+        save_session_at(&file, std::iter::once(folder), 0, &placement).unwrap();
         for icon_theme in [IconTheme::Lucide, IconTheme::Tabler, IconTheme::Windows] {
             for language in [
                 crate::i18n::Language::Japanese,
@@ -711,10 +840,10 @@ mod tests {
                 let loaded = load_at(&file).unwrap();
                 assert_eq!(loaded.appearance.icon_theme, icon_theme);
                 assert_eq!(loaded.appearance.language, language);
-                assert_eq!(loaded.last_folder.as_deref(), Some(folder));
+                assert_eq!(loaded.session, Some(Session::single(folder.to_owned())));
                 assert_eq!(loaded.placement.unwrap().show_command(), SW_SHOWMAXIMIZED);
 
-                save_session_at(&file, folder, &placement).unwrap();
+                save_session_at(&file, std::iter::once(folder), 0, &placement).unwrap();
                 let loaded = load_at(&file).unwrap();
                 assert_eq!(loaded.appearance.icon_theme, icon_theme);
                 assert_eq!(loaded.appearance.language, language);
@@ -724,6 +853,66 @@ mod tests {
                 assert!(loaded.terminal.arguments.is_empty());
             }
         }
+    }
+
+    #[test]
+    fn large_sessions_preserve_every_tab_and_closed_tabs_stay_closed() {
+        let temp = Temp::new();
+        let file = temp.0.join("settings.ini");
+        let placement = Placement::from_native(native_placement(SW_SHOWNORMAL, 0)).unwrap();
+        // More than one native INI section can hold; no tab may be truncated.
+        let folders: Vec<_> = (0..160)
+            .map(|i| PathBuf::from(format!(r"C:\{}\tab{i}", "日本語".repeat(80))))
+            .collect();
+        save_session_at(&file, folders.iter().map(PathBuf::as_path), 97, &placement).unwrap();
+        let loaded = load_at(&file).unwrap().session.unwrap();
+        assert_eq!(loaded.folders, folders);
+        assert_eq!(loaded.active, 97);
+        save_session_at(
+            &file,
+            folders[..2].iter().map(PathBuf::as_path),
+            0,
+            &placement,
+        )
+        .unwrap();
+        assert_eq!(
+            load_at(&file).unwrap().session,
+            Some(Session {
+                folders: folders[..2].to_vec(),
+                active: 0
+            })
+        );
+    }
+
+    #[test]
+    fn failed_session_replacement_preserves_the_previous_tab_list() {
+        let temp = Temp::new();
+        let file = temp.0.join("settings.ini");
+        let placement = Placement::from_native(native_placement(SW_SHOWNORMAL, 0)).unwrap();
+        let folders = [PathBuf::from(r"C:\first"), PathBuf::from(r"D:\second")];
+        save_session_at(&file, folders.iter().map(PathBuf::as_path), 1, &placement).unwrap();
+        let lock = OpenOptions::new()
+            .read(true)
+            .share_mode(1)
+            .open(temp.0.join("session.json"))
+            .unwrap();
+        assert!(
+            save_session_at(
+                &file,
+                std::iter::once(Path::new(r"E:\replacement")),
+                0,
+                &placement
+            )
+            .is_err()
+        );
+        drop(lock);
+        assert_eq!(
+            load_at(&file).unwrap().session,
+            Some(Session {
+                folders: folders.to_vec(),
+                active: 1
+            })
+        );
     }
 
     #[test]

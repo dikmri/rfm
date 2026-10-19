@@ -123,7 +123,7 @@ fn select_mode(hwnd: HWND, state: &Dialog, mode: StartupMode) {
     state.mode.set(mode);
     let selected = match mode {
         StartupMode::Home => ID_HOME,
-        StartupMode::LastFolder => ID_LAST,
+        StartupMode::LastSession => ID_LAST,
         StartupMode::CustomFolder => ID_CUSTOM,
     };
     unsafe {
@@ -349,7 +349,7 @@ unsafe extern "system" fn window_proc(hwnd: HWND, message: u32, w: WPARAM, l: LP
                         let _busy = Busy(&state.busy);
                         match id {
                             ID_HOME => select_mode(hwnd, state, StartupMode::Home),
-                            ID_LAST => select_mode(hwnd, state, StartupMode::LastFolder),
+                            ID_LAST => select_mode(hwnd, state, StartupMode::LastSession),
                             ID_CUSTOM => select_mode(hwnd, state, StartupMode::CustomFolder),
                             ID_BROWSE => browse(hwnd),
                             ID_EXECUTABLE_BROWSE => browse_executable(hwnd),
@@ -538,8 +538,8 @@ pub fn show(owner: HWND, font: HFONT, current_folder: &Path) -> io::Result<()> {
                 ID_LAST,
                 windows_sys::core::w!("BUTTON"),
                 tr_w!(
-                    "前回終了時に表示していたタブのフォルダー(&L)",
-                    "Folder in the active tab when rfm &last closed"
+                    "前回終了時のタブをすべて復元(&L)",
+                    "Restore all tabs from the &last session"
                 ),
                 WS_TABSTOP | BS_AUTORADIOBUTTON as u32,
                 0,
@@ -779,7 +779,7 @@ pub fn show(owner: HWND, font: HFONT, current_folder: &Path) -> io::Result<()> {
         ShowWindow(hwnd, SW_SHOW);
         let selected = match startup.mode {
             StartupMode::Home => ID_HOME,
-            StartupMode::LastFolder => ID_LAST,
+            StartupMode::LastSession => ID_LAST,
             StartupMode::CustomFolder => ID_CUSTOM,
         };
         SetFocus(GetDlgItem(hwnd, selected));

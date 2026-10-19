@@ -1873,6 +1873,14 @@ impl App {
     fn current(&self) -> &Tab {
         &self.tabs[self.active]
     }
+
+    fn save_session(&self) -> io::Result<()> {
+        settings::save_session(
+            self.hwnd,
+            self.tabs.iter().map(|tab| tab.path.as_path()),
+            self.active,
+        )
+    }
     fn current_mut(&mut self) -> &mut Tab {
         &mut self.tabs[self.active]
     }
@@ -2895,7 +2903,7 @@ impl App {
         };
         match update_ui::prepare(self.hwnd, release, restart) {
             Ok(Some(pending)) => {
-                if let Err(err) = settings::save_session(self.hwnd, &self.current().path) {
+                if let Err(err) = self.save_session() {
                     error(
                         self.hwnd,
                         tr_format!(
@@ -4024,7 +4032,7 @@ unsafe extern "system" fn window_proc(hwnd: HWND, message: u32, w: WPARAM, l: LP
                     Some(0)
                 }
                 WM_CLOSE => {
-                    if let Err(err) = settings::save_session(hwnd, &app.current().path) {
+                    if let Err(err) = app.save_session() {
                         let message = tr_format!(
                             "終了時の状態を保存できませんでした。\n{err}\n\n保存せずに終了しますか？",
                             "Could not save the session.\n{err}\n\nExit without saving?"
@@ -4042,7 +4050,7 @@ unsafe extern "system" fn window_proc(hwnd: HWND, message: u32, w: WPARAM, l: LP
                     None
                 }
                 WM_ENDSESSION if w != 0 => {
-                    let _ = settings::save_session(hwnd, &app.current().path);
+                    let _ = app.save_session();
                     Some(0)
                 }
                 _ => None,
@@ -4233,7 +4241,7 @@ pub fn run() {
             ..class
         };
         RegisterClassW(&prompt_class);
-        let (saved, load_error) = match settings::load() {
+        let (mut saved, load_error) = match settings::load() {
             Ok(saved) => (saved, None),
             Err(err) => (settings::Settings::default(), Some(err)),
         };
@@ -4257,7 +4265,7 @@ pub fn run() {
                 return;
             }
         };
-        let (paths, resumed_active) = if let Some(restart) = resumed {
+        let (paths, restored_active) = if let Some(restart) = resumed {
             (restart.folders, Some(restart.active))
         } else {
             let paths: Vec<PathBuf> = std::env::args_os()
@@ -4273,12 +4281,12 @@ pub fn run() {
                     }
                 })
                 .collect();
-            let paths = if paths.is_empty() {
-                vec![settings::startup_path(&saved, home())]
+            if paths.is_empty() {
+                let session = settings::startup_session(&mut saved, home());
+                (session.folders, Some(session.active))
             } else {
-                paths
-            };
-            (paths, None)
+                (paths, None)
+            }
         };
         let hwnd = CreateWindowExW(
             WS_EX_ACCEPTFILES | WS_EX_CONTROLPARENT,
@@ -4319,7 +4327,7 @@ pub fn run() {
                 return;
             }
         };
-        if let Some(active) = resumed_active.filter(|&active| active < app.tabs.len()) {
+        if let Some(active) = restored_active.filter(|&active| active < app.tabs.len()) {
             app.active = active;
             app.update_tab_bar();
             app.show_current();

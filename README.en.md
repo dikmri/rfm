@@ -61,7 +61,7 @@ The menus are rfm's own compact interface, not File Explorer's ribbon. The Share
 
 ## Settings and language
 
-Open **File → Settings…**. Settings are saved to `%LOCALAPPDATA%\rfm\settings.ini`; no extra background service is required.
+Open **File → Settings…**. Preferences are saved to `%LOCALAPPDATA%\rfm\settings.ini`, and tabs to `session.json` in the same folder. No extra background service is required.
 
 ### Language
 
@@ -71,7 +71,9 @@ Automatic uses Japanese when the Windows user UI language is Japanese, and Engli
 
 ### Startup and window placement
 
-Choose the home folder (default), the folder in the active tab when rfm last closed, or a specific absolute folder path. This is **not a restore-all-tabs option**. Startup changes apply on the next launch.
+Choose the home folder (default), **Restore all tabs from the last session**, or a specific absolute folder path. Restoring a session preserves every tab's folder, tab order, and active tab, including duplicate folders in separate tabs. Closed tabs are not restored on the next launch. Startup changes apply on the next launch.
+
+The older “last folder” option is migrated to full-tab restoration. Tabs that an older version never saved cannot be recovered retroactively. Session files are replaced only after writing completes; a save failure is reported and leaves the previous tab list intact. When using multiple windows, the last window to close determines the restored tab session.
 
 Window size, position, and maximized state are saved on normal exit. Exiting while minimized restores the pre-minimized state next time. Windows placement handling adjusts an off-screen saved position when, for example, a monitor has been disconnected.
 
